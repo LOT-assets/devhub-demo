@@ -1,0 +1,15 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payout-disbursement-service
+  description: Ejecuta el desembolso final de fondos hacia las cuentas bancarias de comercios y pymes, y registra el resultado en el ledger
+  tags: [java, quarkus, payouts]
+spec:
+  type: service
+  lifecycle: production
+  owner: fintech-core-team
+  system: payments-platform
+  dependsOn:
+    - component:bank-aggregator
+    - component:core-ledger-service
+    - resource:payments-db

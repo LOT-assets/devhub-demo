@@ -1,0 +1,10 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: message-broker
+  description: Bus de eventos (Kafka) compartido para la comunicación asíncrona entre pagos, conciliación, fraude y notificaciones
+  tags: [kafka, messaging]
+spec:
+  type: message-broker
+  owner: platform-sre-team
+  system: payments-platform

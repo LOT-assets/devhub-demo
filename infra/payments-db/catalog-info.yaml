@@ -1,0 +1,10 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: payments-db
+  description: Base de datos PostgreSQL que almacena el estado transaccional del payment-orchestrator y payout-disbursement-service
+  tags: [postgresql, database]
+spec:
+  type: database
+  owner: platform-sre-team
+  system: payments-platform

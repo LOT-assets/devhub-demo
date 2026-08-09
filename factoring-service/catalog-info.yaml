@@ -1,0 +1,14 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: factoring-service
+  description: Genera y gestiona ofertas de financiamiento (factoring) para pymes y comercios en función de su score crediticio
+  tags: [java, quarkus, factoring]
+spec:
+  type: service
+  lifecycle: production
+  owner: credit-risk-team
+  system: credit-intermediation
+  dependsOn:
+    - component:credit-scoring-service
+    - component:core-ledger-service

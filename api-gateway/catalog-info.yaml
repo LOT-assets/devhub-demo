@@ -1,0 +1,16 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: api-gateway
+  description: Gateway público de FinBridge, expone la API de comercios y enruta hacia el orquestador de pagos
+  tags: [nodejs, gateway, rest]
+spec:
+  type: service
+  lifecycle: production
+  owner: fintech-core-team
+  system: payments-platform
+  providesApis: [merchant-public-api]
+  dependsOn:
+    - component:payment-orchestrator
+    - component:merchant-onboarding-service
+    - component:factoring-service

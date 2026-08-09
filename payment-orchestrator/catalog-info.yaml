@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payment-orchestrator
+  description: Orquesta el ciclo de vida de cobros y pagos, coordinando conectores bancarios, ledger, control de fraude y desembolsos
+  tags: [java, quarkus, rest, payments]
+spec:
+  type: service
+  lifecycle: production
+  owner: fintech-core-team
+  system: payments-platform
+  providesApis: [payment-orchestrator-api]
+  dependsOn:
+    - component:bank-aggregator
+    - component:core-ledger-service
+    - component:fraud-risk-service
+    - component:payout-disbursement-service
+    - resource:message-broker
+    - resource:payments-db

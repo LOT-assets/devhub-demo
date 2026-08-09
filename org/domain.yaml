@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Domain
+metadata:
+  name: financial-intermediation
+  description: >-
+    Dominio de negocio de FinBridge: intermediación financiera que conecta
+    servicios bancarios de múltiples bancos para ofrecer cobros, pagos,
+    financiamiento y herramientas de gestión a pymes y comercios.
+  tags: [fintech, banking-as-a-service, pymes, comercios]
+spec:
+  owner: fintech-core-team

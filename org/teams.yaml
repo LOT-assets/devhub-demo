@@ -1,0 +1,63 @@
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: fintech-core-team
+  description: Dueños del núcleo de pagos, ledger y orquestación transaccional de FinBridge
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: banking-integrations-team
+  description: Construye y mantiene los conectores hacia los bancos socios y el agregador bancario
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: credit-risk-team
+  description: Modelos de scoring, fraude y financiamiento (factoring) para pymes y comercios
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: merchant-experience-team
+  description: Portal de comercios, onboarding, notificaciones y backoffice operativo
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: platform-sre-team
+  description: Infraestructura compartida (bases de datos, mensajería, cache) que sostiene la plataforma
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: product-owner-finbridge
+  description: Product owner de la plataforma FinBridge
+spec:
+  memberOf: [fintech-core-team]
+---
+apiVersion: backstage.io/v1alpha1
+kind: User
+metadata:
+  name: admin
+  description: Cuenta admin de Keycloak (realm sso), usada para el login OIDC real del demo
+spec:
+  profile:
+    displayName: Admin Demo
+    email: admin@demo.redhat.com
+  memberOf: [platform-sre-team]

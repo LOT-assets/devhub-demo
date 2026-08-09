@@ -1,0 +1,15 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: reconciliation-service
+  description: Concilia periódicamente los movimientos reportados por los bancos socios contra el ledger interno y reporta discrepancias
+  tags: [python, batch, reconciliation]
+spec:
+  type: service
+  lifecycle: production
+  owner: fintech-core-team
+  system: payments-platform
+  dependsOn:
+    - component:core-ledger-service
+    - component:bank-aggregator
+    - resource:message-broker

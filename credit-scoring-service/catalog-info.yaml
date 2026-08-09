@@ -1,0 +1,13 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: credit-scoring-service
+  description: Calcula el score crediticio de pymes y comercios a partir de su historial transaccional, usado en onboarding y factoring
+  tags: [python, ml, credit-risk]
+spec:
+  type: service
+  lifecycle: production
+  owner: credit-risk-team
+  system: credit-intermediation
+  dependsOn:
+    - resource:redis-cache

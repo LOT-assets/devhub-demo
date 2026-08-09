@@ -1,0 +1,15 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: merchant-onboarding-service
+  description: Gestiona el alta y verificación (KYC, scoring, fraude) de nuevas pymes y comercios en FinBridge
+  tags: [nodejs, rest, onboarding]
+spec:
+  type: service
+  lifecycle: production
+  owner: merchant-experience-team
+  system: merchant-experience
+  dependsOn:
+    - component:credit-scoring-service
+    - component:fraud-risk-service
+    - component:notifications-service

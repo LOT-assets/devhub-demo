@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: bank-connector-alfa
+  description: Conector propietario hacia el Banco Alfa (saldos, transferencias, estados de cuenta) para el bank-aggregator
+  tags: [nodejs, connector, open-banking, banco-alfa]
+spec:
+  type: service
+  lifecycle: production
+  owner: banking-integrations-team
+  system: banking-integration

@@ -1,0 +1,29 @@
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: payment-orchestrator-api
+  description: API interna para iniciar, autorizar y consultar el estado de cobros y pagos
+  tags: [rest, payments]
+spec:
+  type: openapi
+  lifecycle: production
+  owner: fintech-core-team
+  system: payments-platform
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: Payment Orchestrator API
+      version: 1.0.0
+    paths:
+      /payments:
+        post:
+          summary: Crea una nueva orden de cobro o pago
+          responses:
+            '201':
+              description: Created
+      /payments/{id}:
+        get:
+          summary: Consulta el estado de una transacción
+          responses:
+            '200':
+              description: OK
