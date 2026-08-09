@@ -1,8 +1,10 @@
 # Catálogo inicial — FinBridge
 
-Este directorio es el **catálogo semilla** que se importa a Developer Hub al arrancar el demo. Crea todos los activos (dominio, sistemas, equipos, APIs, componentes y recursos) de la empresa ficticia **FinBridge**, una plataforma de intermediación financiera para pymes y comercios.
+Este directorio es el **catálogo semilla** que se importa a Developer Hub al arrancar el demo. Crea todos los activos (dominio, sistemas, equipos, APIs, componentes y recursos) de la empresa ficticia **FinBridge**, una plataforma de intermediación financiera para pymes y comercios — y también aloja los **golden paths** (`templates/`) con los que se crean componentes nuevos.
 
-Su propósito no es solo poblar la UI: es dar al MCP de Developer Hub algo real que servir — APIs disponibles, dueños/sistemas existentes y la estructura de arquitectura — para que un desarrollador (o su asistente de IA) pueda consultarlo *antes* de crear un componente nuevo. Los componentes nuevos deben crearse vía golden path (ver `../templates/`), cuyo paso `catalog:register` los añade de vuelta al catálogo. Este directorio es el punto de partida de ese ciclo, no un catálogo estático que se edita a mano indefinidamente.
+Su propósito no es solo poblar la UI: es dar al MCP de Developer Hub algo real que servir — APIs disponibles, dueños/sistemas existentes, estándares de arquitectura y golden paths — para que un desarrollador (o su asistente de IA) pueda consultarlo *antes* de crear un componente nuevo. Los componentes nuevos deben crearse vía golden path, cuyo paso `catalog:register` los añade de vuelta al catálogo. Este directorio es el punto de partida de ese ciclo, no un catálogo estático que se edita a mano indefinidamente.
+
+Repo en GitHub: `LOT-assets/devhub-demo`, rama `main`.
 
 ## Estructura
 
@@ -21,6 +23,10 @@ initial-catalog/
 │   ├── payments-db/catalog-info.yaml
 │   ├── message-broker/catalog-info.yaml
 │   └── redis-cache/catalog-info.yaml
+├── templates/            # Golden paths (kind: Template)
+│   └── simple-frontend/
+│       ├── template.yaml
+│       └── skeleton/     # contenido que se scaffoldea en el repo nuevo
 └── <servicio>/catalog-info.yaml   # un directorio por Component
 ```
 
@@ -41,45 +47,21 @@ Los 4 recursos de `infra/` están asignados a `payments-platform` (dueño: `plat
 
 **APIs:** `payment-orchestrator-api` y `merchant-public-api` (owner: fintech-core-team, system: payments-platform), `bank-aggregator-api` (owner: banking-integrations-team, system: banking-integration).
 
+**Users:** `product-owner-finbridge` (fintech-core-team), `admin` (platform-sre-team — cuenta de Keycloak usada para el login OIDC del demo, ver `install/README.md`).
+
 Todas las referencias (`dependsOn`, `providesApis`, `owner`, `system`) fueron verificadas y resuelven a una entidad existente en este catálogo — no hay relaciones rotas.
 
-## Cómo importarlo en RHDH
+## Golden paths (`templates/`)
 
-Este repo (`devhub-demo` en GitHub, remote `LOT-assets/devhub-demo`) todavía no tiene commits — hay que pushearlo antes de que RHDH pueda descubrirlo vía integración de GitHub. Dos formas de registrarlo, según el escenario:
+`templates/simple-frontend` scaffoldea un frontend React + Vite y lo registra en el catálogo. Pide `name`, `description`, `owner` (Group/User) y `system` (uno de los 4 systems de arriba) — este último es obligatorio para que el componente nuevo no quede huérfano de la arquitectura de FinBridge. El `catalog-info.yaml` generado hereda esos valores, incluido `spec.system`.
 
-### Opción A — Demo offline / sin salida a GitHub (igual que `install/`)
+Owner del template: `platform-sre-team`.
 
-`install/deploy-demo.sh` ya monta un catálogo de ejemplo como ConfigMap (`catalog-entities.yaml`, un único archivo con entidades separadas por `---`). Para reusar ese mecanismo con el catálogo de FinBridge en lugar del catálogo mínimo actual, habría que concatenar todos los `catalog-info.yaml` de este directorio en un solo archivo `all.yaml` y montarlo igual. No implementado todavía — es el paso natural si se prefiere una demo sin dependencia de red hacia GitHub.
+## Cómo se importa en RHDH
 
-### Opción B — Discovery vía GitHub (recomendada, sostiene el ciclo de golden paths)
+`install/deploy-demo.sh` configura esto automáticamente (ver `install/README.md`):
 
-Una vez pusheado el repo, agregar en el `appConfig` de RHDH (`install/rhdh-values.yaml`):
+- **Discovery por organización** (`catalog.providers.github`, `catalogPath: '/**/catalog-info.yaml'`): encuentra automáticamente cualquier `catalog-info.yaml` en cualquier repo de `LOT-assets`, incluyendo los que registre un golden path al crear un componente nuevo. Esto es lo que sostiene el ciclo de autocrecimiento del catálogo.
+- **Locations explícitas** para los archivos que agrupan varias entidades o no siguen la convención `catalog-info.yaml` (no los alcanza el discovery de arriba): `org/domain.yaml`, `org/systems.yaml`, `org/teams.yaml`, las 3 APIs de `apis/`, y `templates/simple-frontend/template.yaml`.
 
-```yaml
-catalog:
-  providers:
-    github:
-      finbridge:
-        organization: 'LOT-assets'
-        catalogPath: '/**/catalog-info.yaml'
-        schedule:
-          frequency: { minutes: 30 }
-          timeout: { minutes: 3 }
-  locations:
-    # org/ y apis/ no siguen la convención catalog-info.yaml (son varias
-    # entidades por archivo), así que se registran explícitamente:
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/org/domain.yaml
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/org/systems.yaml
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/org/teams.yaml
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/apis/bank-aggregator-api.yaml
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/apis/merchant-public-api.yaml
-    - type: url
-      target: https://github.com/LOT-assets/devhub-demo/blob/main/apis/payment-orchestrator-api.yaml
-```
-
-El discovery provider (`catalogPath: '/**/catalog-info.yaml'`) es lo que hace que el catálogo se automantenga: cualquier componente nuevo creado a través de un golden path (que registra su propio `catalog-info.yaml` en el repo destino) aparece solo, sin tocar esta configuración. Requiere que RHDH tenga configurada una integración/token de GitHub con acceso al repo.
+Requiere que RHDH tenga un token de GitHub con acceso de lectura a este repo (`install/github-token.txt`).
