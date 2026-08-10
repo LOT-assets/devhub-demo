@@ -5,5 +5,9 @@ install/github-token.txt
 # generado por deploy-demo.sh en cada corrida
 demo-workspace/.env
 
-# estado local de Claude Code al abrir demo-workspace/ en Codium
+# estado local de Claude Code
 demo-workspace/.claude/
+.claude/
+
+# repo independiente (catálogo FinBridge + golden paths), remote propio: FinBridgeDemo/devhub-demo
+initial-catalog/
