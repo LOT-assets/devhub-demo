@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rhdh-mcp": {
+      "type": "http",
+      "url": "${RHDH_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${RHDH_MCP_TOKEN}"
+      }
+    }
+  }
+}

@@ -1,0 +1,217 @@
+# Values para instalar Red Hat Developer Hub 1.9.7 con MCP + catálogo de
+# FinBridge (../initial-catalog, descubierto vía GitHub) + login real vía Keycloak OIDC.
+global:
+  host: "backstage-backstage.apps.cluster-qhtww.dyn.redhatworkshops.io"
+  imagePullSecrets:
+    - rhdh-pull-secret
+  dynamic:
+    plugins:
+      # MCP server backend: expone Backstage actions como MCP tools
+      - package: oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/backstage-plugin-mcp-actions-backend:bs_1.45.3__0.1.5!backstage-plugin-mcp-actions-backend
+        disabled: false
+      # MCP tool: permite a un cliente MCP consultar el catálogo de software
+      - package: oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/red-hat-developer-hub-backstage-plugin-software-catalog-mcp-tool:bs_1.45.3__0.4.1!red-hat-developer-hub-backstage-plugin-software-catalog-mcp-tool
+        disabled: false
+      # MCP tool: permite a un cliente MCP consultar TechDocs
+      - package: oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/red-hat-developer-hub-backstage-plugin-techdocs-mcp-tool:bs_1.45.3__0.3.2!red-hat-developer-hub-backstage-plugin-techdocs-mcp-tool
+        disabled: false
+      # habilita el discovery provider de GitHub para el catálogo de FinBridge.
+      # Viene deshabilitado por defecto en RHDH, con un pluginConfig de ejemplo
+      # (provider "providerId" con ${GITHUB_ORG} sin resolver, porque esa env var
+      # no existe en el contenedor). Si solo cambiamos disabled: false sin pisar
+      # ese pluginConfig, el provider de ejemplo queda activo y roto (organization
+      # vacío) y tira abajo TODO el módulo catalog al arrancar. Por eso la config
+      # real va acá, bajo la MISMA clave 'providerId', para reemplazar el default
+      # en vez de convivir con él.
+      - package: ./dynamic-plugins/dist/backstage-plugin-catalog-backend-module-github-dynamic
+        disabled: false
+        pluginConfig:
+          catalog:
+            providers:
+              github:
+                providerId:
+                  organization: 'FinBridgeDemo'
+                  catalogPath: '/**/catalog-info.yaml'
+                  schedule:
+                    frequency: { minutes: 30 }
+                    timeout: { minutes: 3 }
+      # habilita la acción publish:github del scaffolder (usada por el golden
+      # path simple-frontend para crear el repo nuevo). Viene deshabilitada
+      # por defecto; sin esto el step 'publish' del template falla porque la
+      # acción publish:github no existe. No trae pluginConfig propio, usa la
+      # integración de GitHub (integrations.github / GITHUB_TOKEN) de abajo.
+      - package: ./dynamic-plugins/dist/backstage-plugin-scaffolder-backend-module-github-dynamic
+        disabled: false
+
+upstream:
+  backstage:
+    appConfig:
+      auth:
+        session:
+          secret: ${SESSION_SECRET}
+        providers:
+          guest:
+            dangerouslyAllowOutsideDevelopment: true
+          oidc:
+            production:
+              clientId: ${KEYCLOAK_CLIENT_ID}
+              clientSecret: ${KEYCLOAK_CLIENT_SECRET}
+              metadataUrl: https://sso.apps.cluster-qhtww.dyn.redhatworkshops.io/realms/sso/.well-known/openid-configuration
+              callbackUrl: https://backstage-backstage.apps.cluster-qhtww.dyn.redhatworkshops.io/api/auth/oidc/handler/frame
+              additionalScopes: ['email', 'profile']
+              prompt: auto
+              signIn:
+                resolvers:
+                  - resolver: preferredUsernameMatchingUserEntityName
+      signInPage: oidc
+      backend:
+        auth:
+          externalAccess:
+            # entrada por defecto del chart (no se debe perder al sobreescribir el array)
+            - type: legacy
+              options:
+                subject: legacy-default-config
+                secret: ${BACKEND_SECRET}
+            # habilita clientes MCP autenticados con un bearer token estático
+            - type: static
+              options:
+                token: ${MCP_TOKEN}
+                subject: mcp-clients
+        actions:
+          pluginSources:
+            - software-catalog-mcp-tool
+            - techdocs-mcp-tool
+            # expone las well-known actions del scaffolder (scaffolder.execute-template,
+            # scaffolder.dry-run-template) como MCP tools; sin esto el MCP no puede
+            # lanzar golden paths. No es un plugin -mcp-tool dedicado como los de
+            # arriba, es el id del plugin core del scaffolder.
+            - scaffolder
+            # expone search.query (búsqueda de Backstage) como MCP tool. El plugin
+            # search ya corre nativo en RHDH, no requiere dynamic plugin adicional.
+            - search
+      integrations:
+        github:
+          - host: github.com
+            token: ${GITHUB_TOKEN}
+      catalog:
+        # catalog.providers.github vive en el pluginConfig del dynamic plugin
+        # (ver global.dynamic.plugins arriba), no acá.
+        locations:
+          # org/ y apis/ agrupan varias entidades por archivo y no se llaman
+          # catalog-info.yaml, así que el discovery de arriba no las alcanza.
+          # rules.allow es obligatorio: sin él, Backstage rechaza en silencio
+          # cualquier kind que no esté en su allow-list global por defecto
+          # (Domain, Group y User quedan fuera de esa lista por defecto).
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/org/domain.yaml
+            rules:
+              - allow: [Domain]
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/org/systems.yaml
+            rules:
+              - allow: [System]
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/org/teams.yaml
+            rules:
+              - allow: [Group, User]
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/apis/bank-aggregator-api.yaml
+            rules:
+              - allow: [API]
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/apis/merchant-public-api.yaml
+            rules:
+              - allow: [API]
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/apis/payment-orchestrator-api.yaml
+            rules:
+              - allow: [API]
+          # golden paths (kind: Template), tampoco se llaman catalog-info.yaml
+          - type: url
+            target: https://github.com/FinBridgeDemo/devhub-demo/blob/main/templates/simple-frontend/template.yaml
+            rules:
+              - allow: [Template]
+
+    extraEnvVars:
+      # entradas por defecto del chart (no se deben perder al sobreescribir el array)
+      - name: BACKEND_SECRET
+        valueFrom:
+          secretKeyRef:
+            key: backend-secret
+            name: '{{ include "rhdh.backend-secret-name" $ }}'
+      - name: POSTGRESQL_ADMIN_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            key: postgres-password
+            name: '{{- include "rhdh.postgresql.secretName" . }}'
+      # token para autenticar clientes MCP
+      - name: MCP_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-mcp-token
+            key: token
+      # credenciales del cliente OIDC "backstage" en el realm sso de Keycloak
+      - name: KEYCLOAK_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-keycloak-oidc
+            key: client-id
+      - name: KEYCLOAK_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-keycloak-oidc
+            key: client-secret
+      # requerido por el provider oidc para el manejo de sesión/cookies (passport)
+      - name: SESSION_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-session-secret
+            key: secret
+      # token para que el discovery de catálogo lea FinBridgeDemo/devhub-demo
+      - name: GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-github-token
+            key: token
+
+    extraVolumeMounts:
+      # entradas por defecto del chart (no se deben perder al sobreescribir el array)
+      - name: dynamic-plugins-root
+        mountPath: /opt/app-root/src/dynamic-plugins-root
+      - name: extensions-catalog
+        mountPath: /extensions
+      - name: temp
+        mountPath: /tmp
+
+    extraVolumes:
+      # entradas por defecto del chart (no se deben perder al sobreescribir el array)
+      - name: dynamic-plugins-root
+        ephemeral:
+          volumeClaimTemplate:
+            spec:
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 5Gi
+      - name: dynamic-plugins
+        configMap:
+          defaultMode: 420
+          name: '{{ printf "%s-dynamic-plugins" .Release.Name }}'
+          optional: true
+      - name: dynamic-plugins-npmrc
+        secret:
+          defaultMode: 420
+          optional: true
+          secretName: '{{ printf "%s-dynamic-plugins-npmrc" .Release.Name }}'
+      - name: dynamic-plugins-registry-auth
+        secret:
+          defaultMode: 416
+          optional: true
+          secretName: '{{ printf "%s-dynamic-plugins-registry-auth" .Release.Name }}'
+      - name: npmcacache
+        emptyDir: {}
+      - name: extensions-catalog
+        emptyDir: {}
+      - name: temp
+        emptyDir: {}

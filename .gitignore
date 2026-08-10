@@ -1,0 +1,9 @@
+# credenciales reales — el operador las coloca localmente, nunca se commitean
+install/pull-secret.txt
+install/github-token.txt
+
+# generado por deploy-demo.sh en cada corrida
+demo-workspace/.env
+
+# estado local de Claude Code al abrir demo-workspace/ en Codium
+demo-workspace/.claude/
