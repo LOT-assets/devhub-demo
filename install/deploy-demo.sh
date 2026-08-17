@@ -47,6 +47,30 @@ GITHUB_ORG="FinBridgeDemo"
 GITHUB_REPO="devhub-demo"          # repo que contiene ../initial-catalog
 GITHUB_BRANCH="main"
 
+# ---- Red Hat Trusted Artifact Signer (RHTAS) --------------------------------
+# Confirmado contra github.com/securesign/secure-sign-operator (docs/openshift.md
+# + config/samples/rhtas_v1_securesign.yaml). RHTAS_ENABLED=false para saltarse
+# este bloque sin borrar el resto del script.
+RHTAS_ENABLED="true"
+RHTAS_OPERATOR_NAMESPACE="openshift-rhtas-operator"
+RHTAS_NAMESPACE="trusted-artifact-signer"   # namespace donde vive la instancia (Securesign CR)
+RHTAS_CLIENT_ID="trusted-artifact-signer"   # client OIDC en Keycloak, para el login de Fulcio
+
+# ---- Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
+# NO confirmado todavía: docs.redhat.com bloqueó el acceso automatizado y el repo
+# upstream (trustification/trustify-operator) está archivado con un naming que no
+# necesariamente coincide con el operador empaquetado por Red Hat. Es Technology
+# Preview (sin SLA de producción) según la documentación pública.
+# Antes de habilitar esto, correr en el cluster de prueba:
+#   oc get packagemanifests -n openshift-marketplace | grep -iE 'trust|profile'
+# y completar RHTPA_PACKAGE / RHTPA_CHANNEL / RHTPA_CATALOG_SOURCE abajo.
+RHTPA_ENABLED="false"
+RHTPA_OPERATOR_NAMESPACE="openshift-rhtpa-operator"
+RHTPA_NAMESPACE="trusted-profile-analyzer"
+RHTPA_PACKAGE=""
+RHTPA_CHANNEL=""
+RHTPA_CATALOG_SOURCE="redhat-operators"
+
 PULL_SECRET_FILE="$(dirname "$0")/pull-secret.txt"
 GITHUB_TOKEN_FILE="$(dirname "$0")/github-token.txt"
 VALUES_FILE="$(dirname "$0")/rhdh-values.yaml"
@@ -407,6 +431,161 @@ RHDH_MCP_URL=https://${RHDH_HOST}/api/mcp-actions/v1
 RHDH_MCP_TOKEN=${MCP_TOKEN}
 EOF
 
+# ---- 10. Red Hat Trusted Artifact Signer (RHTAS) --------------------------------
+if [ "$RHTAS_ENABLED" = "true" ]; then
+  echo "==> Instalando el operador RHTAS (rhtas-operator) en ${RHTAS_OPERATOR_NAMESPACE}"
+  oc get namespace "$RHTAS_OPERATOR_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_OPERATOR_NAMESPACE" >/dev/null
+
+  cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: rhtas-operator-group
+  namespace: ${RHTAS_OPERATOR_NAMESPACE}
+spec:
+  targetNamespaces:
+    - ${RHTAS_OPERATOR_NAMESPACE}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhtas-operator
+  namespace: ${RHTAS_OPERATOR_NAMESPACE}
+spec:
+  channel: stable
+  name: rhtas-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+  echo "==> Esperando a que el CSV de rhtas-operator quede en 'Succeeded' (hasta 5 min)..."
+  RHTAS_CSV_READY=""
+  for i in $(seq 1 30); do
+    CSV_NAME=$(oc get subscription rhtas-operator -n "$RHTAS_OPERATOR_NAMESPACE" -o jsonpath='{.status.installedCSV}' 2>/dev/null)
+    CSV_PHASE=$([ -n "$CSV_NAME" ] && oc get csv "$CSV_NAME" -n "$RHTAS_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [ "$CSV_PHASE" = "Succeeded" ]; then
+      RHTAS_CSV_READY="true"
+      break
+    fi
+    sleep 10
+  done
+  if [ -z "$RHTAS_CSV_READY" ]; then
+    echo "AVISO: el CSV de rhtas-operator no llegó a 'Succeeded' en 5 min (fase actual: '${CSV_PHASE:-desconocida}')."
+    echo "       Revisa 'oc get csv -n ${RHTAS_OPERATOR_NAMESPACE}' y 'oc get installplan -n ${RHTAS_OPERATOR_NAMESPACE}'."
+    echo "       Sigo con el resto del script; la instancia de Securesign puede quedar pendiente hasta que el operador esté listo."
+  fi
+
+  echo "==> Creando cliente OIDC '${RHTAS_CLIENT_ID}' en el realm ${KEYCLOAK_REALM} (login de Fulcio)"
+  # Reutiliza $KC / $KC_TOKEN del paso 5. Client público (sin secret): cosign hace
+  # login interactivo abriendo un listener local en http://localhost:<puerto>.
+  # NO VALIDADO end-to-end todavía — revisar si el flujo real de cosign/RHTAS
+  # necesita otro redirectUri una vez probado contra el cluster de prueba.
+  EXISTING_RHTAS_CLIENT_ID=$(curl -fsS "$KC/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${RHTAS_CLIENT_ID}" \
+    -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')")
+  if [ -n "$EXISTING_RHTAS_CLIENT_ID" ]; then
+    curl -fsS -X DELETE "$KC/admin/realms/${KEYCLOAK_REALM}/clients/$EXISTING_RHTAS_CLIENT_ID" -H "Authorization: Bearer $KC_TOKEN"
+  fi
+  curl -fsS -X POST "$KC/admin/realms/${KEYCLOAK_REALM}/clients" \
+    -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
+    -d '{
+      "clientId": "'"$RHTAS_CLIENT_ID"'",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:*", "http://localhost:*/*"]
+    }'
+
+  echo "==> Creando instancia Securesign en ${RHTAS_NAMESPACE}"
+  oc get namespace "$RHTAS_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_NAMESPACE" >/dev/null
+
+  cat <<EOF | oc apply -f -
+apiVersion: rhtas.redhat.com/v1
+kind: Securesign
+metadata:
+  name: securesign-sample
+  namespace: ${RHTAS_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: securesign-sample
+    app.kubernetes.io/instance: securesign-sample
+    app.kubernetes.io/part-of: trusted-artifact-signer
+spec:
+  fulcio:
+    ingress:
+      enabled: true
+    config:
+      oidcIssuers:
+        - clientID: "${RHTAS_CLIENT_ID}"
+          issuerURL: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
+          issuer: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
+          type: "email"
+    signer:
+      certificateChain:
+        organizationName: Red Hat
+  rekor:
+    ingress:
+      enabled: true
+  tuf:
+    ingress:
+      enabled: true
+  tsa:
+    ingress:
+      enabled: true
+    signer:
+      certificateChain:
+        intermediateCA:
+          - organizationName: Red Hat
+        leafCA:
+          organizationName: Red Hat
+        rootCA:
+          organizationName: Red Hat
+EOF
+else
+  echo "==> RHTAS_ENABLED=false, se omite la instalación de Red Hat Trusted Artifact Signer"
+fi
+
+# ---- 11. Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
+if [ "$RHTPA_ENABLED" = "true" ]; then
+  if [ -z "$RHTPA_PACKAGE" ] || [ -z "$RHTPA_CHANNEL" ]; then
+    echo "Error: RHTPA_ENABLED=true pero RHTPA_PACKAGE/RHTPA_CHANNEL no están completos."
+    echo "       Corré 'oc get packagemanifests -n openshift-marketplace | grep -iE \"trust|profile\"' en el cluster y completá esas variables."
+    exit 1
+  fi
+  echo "==> Instalando el operador RHTPA (${RHTPA_PACKAGE}) en ${RHTPA_OPERATOR_NAMESPACE}"
+  oc get namespace "$RHTPA_OPERATOR_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTPA_OPERATOR_NAMESPACE" >/dev/null
+
+  cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: rhtpa-operator-group
+  namespace: ${RHTPA_OPERATOR_NAMESPACE}
+spec:
+  targetNamespaces:
+    - ${RHTPA_OPERATOR_NAMESPACE}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ${RHTPA_PACKAGE}
+  namespace: ${RHTPA_OPERATOR_NAMESPACE}
+spec:
+  channel: ${RHTPA_CHANNEL}
+  name: ${RHTPA_PACKAGE}
+  source: ${RHTPA_CATALOG_SOURCE}
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+  echo "AVISO: instancia de RHTPA (Custom Resource) todavía no scripteada — la forma/CR exacta"
+  echo "       no está confirmada. Revisa la consola de OperatorHub para crear la instancia a mano"
+  echo "       la primera vez, y avisame el CR resultante para automatizarlo acá."
+else
+  echo "==> RHTPA_ENABLED=false, se omite la instalación de Red Hat Trusted Profile Analyzer (falta confirmar el operator package)"
+fi
+
 # ---- Resumen --------------------------------------------------------------------
 cat <<SUMMARY
 
@@ -427,5 +606,8 @@ RHDH desplegado correctamente.
   demo-workspace/.env ya quedó escrito con RHDH_MCP_URL y RHDH_MCP_TOKEN.
   Abre ../demo-workspace en Codium/VS Code y acepta el diálogo de confianza
   del .mcp.json antes de salir a demo (ver demo-workspace/README.md).
+
+  RHTAS:  $( [ "$RHTAS_ENABLED" = "true" ] && echo "instalado en ${RHTAS_NAMESPACE} (ver 'oc get routes -n ${RHTAS_NAMESPACE}' para las URLs de Fulcio/Rekor/TUF/TSA)" || echo "omitido (RHTAS_ENABLED=false)" )
+  RHTPA:  $( [ "$RHTPA_ENABLED" = "true" ] && echo "operador instalado en ${RHTPA_OPERATOR_NAMESPACE}, falta crear la instancia (ver aviso arriba)" || echo "omitido (RHTPA_ENABLED=false, falta confirmar el operator package)" )
 ==========================================================================
 SUMMARY
