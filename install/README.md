@@ -62,7 +62,7 @@ El catálogo tarda hasta el `schedule.frequency` del provider de GitHub (30 min 
 
 ### RHTAS (Red Hat Trusted Artifact Signer) — confirmado, activo por defecto
 
-Instala `rhtas-operator` (canal `stable`, catálogo `redhat-operators`, namespace `openshift-rhtas-operator`) y crea una instancia `Securesign` (Fulcio, Rekor, TUF, TSA con ingress habilitado) en el namespace `trusted-artifact-signer`, con Fulcio apuntando al mismo Keycloak que usa RHDH (client OIDC `trusted-artifact-signer`, público).
+Instala `rhtas-operator` (canal `stable`, catálogo `redhat-operators`, namespace `rhtas-operator` — OpenShift no deja crear proyectos con prefijo `openshift-`) y crea una instancia `Securesign` (Fulcio, Rekor, TUF, TSA con ingress habilitado) en el namespace `trusted-artifact-signer`, con Fulcio apuntando al mismo Keycloak que usa RHDH (client OIDC `trusted-artifact-signer`, público).
 
 **Sin validar contra un cluster real todavía**: el client OIDC (`redirectUris: ["http://localhost:*", "http://localhost:*/*"]`) es el flujo típico que usa `cosign` para login interactivo, pero no se probó de punta a punta. Si el login de `cosign`/RHTAS falla, lo primero a revisar es ese client en Keycloak.
 

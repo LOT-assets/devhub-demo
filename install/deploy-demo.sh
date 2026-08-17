@@ -52,7 +52,7 @@ GITHUB_BRANCH="main"
 # + config/samples/rhtas_v1_securesign.yaml). RHTAS_ENABLED=false para saltarse
 # este bloque sin borrar el resto del script.
 RHTAS_ENABLED="true"
-RHTAS_OPERATOR_NAMESPACE="openshift-rhtas-operator"
+RHTAS_OPERATOR_NAMESPACE="rhtas-operator"   # OpenShift no permite crear proyectos con prefijo "openshift-"
 RHTAS_NAMESPACE="trusted-artifact-signer"   # namespace donde vive la instancia (Securesign CR)
 RHTAS_CLIENT_ID="trusted-artifact-signer"   # client OIDC en Keycloak, para el login de Fulcio
 
@@ -459,7 +459,11 @@ EOF
   RHTAS_CSV_READY=""
   for i in $(seq 1 30); do
     CSV_NAME=$(oc get subscription rhtas-operator -n "$RHTAS_OPERATOR_NAMESPACE" -o jsonpath='{.status.installedCSV}' 2>/dev/null)
-    CSV_PHASE=$([ -n "$CSV_NAME" ] && oc get csv "$CSV_NAME" -n "$RHTAS_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [ -n "$CSV_NAME" ]; then
+      CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$RHTAS_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    else
+      CSV_PHASE=""
+    fi
     if [ "$CSV_PHASE" = "Succeeded" ]; then
       RHTAS_CSV_READY="true"
       break
@@ -578,7 +582,11 @@ EOF
   RHTPA_CSV_READY=""
   for i in $(seq 1 30); do
     CSV_NAME=$(oc get subscription "$RHTPA_PACKAGE" -n "$RHTPA_NAMESPACE" -o jsonpath='{.status.installedCSV}' 2>/dev/null)
-    CSV_PHASE=$([ -n "$CSV_NAME" ] && oc get csv "$CSV_NAME" -n "$RHTPA_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [ -n "$CSV_NAME" ]; then
+      CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$RHTPA_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    else
+      CSV_PHASE=""
+    fi
     if [ "$CSV_PHASE" = "Succeeded" ]; then
       RHTPA_CSV_READY="true"
       break

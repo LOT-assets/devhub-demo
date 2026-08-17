@@ -1,7 +1,7 @@
 # Values para instalar Red Hat Developer Hub 1.9.7 con MCP + catálogo de
 # FinBridge (../initial-catalog, descubierto vía GitHub) + login real vía Keycloak OIDC.
 global:
-  host: "backstage-backstage.apps.cluster-xp8k5.dyn.redhatworkshops.io"
+  host: "backstage-backstage.apps.cluster-swq67.dyn.redhatworkshops.io"
   imagePullSecrets:
     - rhdh-pull-secret
   dynamic:
@@ -56,8 +56,8 @@ upstream:
             production:
               clientId: ${KEYCLOAK_CLIENT_ID}
               clientSecret: ${KEYCLOAK_CLIENT_SECRET}
-              metadataUrl: https://sso.apps.cluster-xp8k5.dyn.redhatworkshops.io/realms/sso/.well-known/openid-configuration
-              callbackUrl: https://backstage-backstage.apps.cluster-xp8k5.dyn.redhatworkshops.io/api/auth/oidc/handler/frame
+              metadataUrl: https://sso.apps.cluster-swq67.dyn.redhatworkshops.io/realms/sso/.well-known/openid-configuration
+              callbackUrl: https://backstage-backstage.apps.cluster-swq67.dyn.redhatworkshops.io/api/auth/oidc/handler/frame
               additionalScopes: ['email', 'profile']
               prompt: auto
               signIn:
