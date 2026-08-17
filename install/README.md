@@ -7,7 +7,7 @@ Esta carpeta contiene todo lo necesario para desplegar RHDH sobre un cluster de 
 - Login real vía Keycloak OIDC.
 - `../demo-workspace/.env` listo para que Codium/VS Code se conecte al MCP de RHDH.
 - Red Hat Trusted Artifact Signer (RHTAS) desplegado, integrado con el mismo Keycloak.
-- Red Hat Trusted Profile Analyzer (RHTPA) — soporte parcial, ver "RHTAS y RHTPA" abajo.
+- Red Hat Trusted Profile Analyzer (RHTPA) desplegado (operador comunitario `trustify-operator`, Technology Preview).
 
 ## Contenido
 
@@ -52,7 +52,7 @@ El script:
 8. Si detecta el CLI `claude` localmente, registra el endpoint MCP de RHDH (`claude mcp add`). Si detecta `codium`, instala la extensión de Claude Code.
 9. Escribe `../demo-workspace/.env` con `RHDH_MCP_URL` y `RHDH_MCP_TOKEN`, que es lo que usa el `.mcp.json` de esa carpeta para conectarse al RHDH recién desplegado (ver `../demo-workspace/README.md`).
 10. Si `RHTAS_ENABLED=true` (default): instala el operador RHTAS, crea un client OIDC (`trusted-artifact-signer`) en el mismo Keycloak, y crea una instancia `Securesign` (Fulcio + Rekor + TUF + TSA) en el namespace `trusted-artifact-signer`.
-11. Si `RHTPA_ENABLED=true`: instala el operador RHTPA. **No crea la instancia** todavía (ver "RHTAS y RHTPA" abajo) — por defecto este paso está deshabilitado.
+11. Si `RHTPA_ENABLED=true` (default): instala el operador RHTPA (`trustify-operator`, canal `alpha`, catálogo `community-operators`) y crea una instancia `Trustify` con spec vacío (defaults del operador: Server + UI) en el namespace `trusted-profile-analyzer`.
 
 Al finalizar imprime un resumen con la URL de RHDH, el modo de login, el `MCP_TOKEN`, y el estado de RHTAS/RHTPA (también queda guardado en el secret `rhdh-mcp-token` del namespace `backstage`).
 
@@ -68,15 +68,15 @@ Instala `rhtas-operator` (canal `stable`, catálogo `redhat-operators`, namespac
 
 Para desactivarlo: `RHTAS_ENABLED="false"` al inicio de `deploy-demo.sh`.
 
-### RHTPA (Red Hat Trusted Profile Analyzer) — deshabilitado por defecto, falta el nombre del operator package
+### RHTPA (Red Hat Trusted Profile Analyzer) — confirmado, activo por defecto
 
-Es **Technology Preview** (sin SLA de producción). No se pudo confirmar el package/channel exacto del operador vía documentación pública (`docs.redhat.com` bloquea fetch automatizado; el repo upstream `trustification/trustify-operator` está archivado con un naming que no necesariamente coincide con el operador empaquetado). Para habilitarlo:
+Es **Technology Preview** (sin SLA de producción) y, al menos en el catálogo de operadores probado, solo está disponible como operador **comunitario** (`trustify-operator`, catálogo `community-operators`, canal `alpha` — no hay un paquete "Red Hat Operators" separado). Confirmado corriendo `oc get packagemanifest trustify-operator -n openshift-marketplace -o json` contra un cluster real.
 
-1. Con el cluster ya arriba: `oc get packagemanifests -n openshift-marketplace | grep -iE 'trust|profile'`.
-2. Completar `RHTPA_PACKAGE` y `RHTPA_CHANNEL` al inicio de `deploy-demo.sh` con lo que aparezca ahí.
-3. `RHTPA_ENABLED="true"`.
+El CRD (`Trustify`, `org.trustify/v1alpha1`) solo soporta `installMode: OwnNamespace` — el operador y la instancia comparten el namespace `trusted-profile-analyzer` (a diferencia de RHTAS, que usa un namespace separado para el operador). La instancia se crea con `spec: {}` (el `alm-examples` oficial del operador), que según su descripción instala Server + UI con sus defaults.
 
-El script instala el operador pero **no crea la instancia** (el Custom Resource/spec mínimo tampoco está confirmado) — hay que crearla una vez a mano desde OperatorHub para conocer su forma, y de ahí se puede scriptear igual que se hizo con `Securesign`.
+**No investigado todavía:** integración con Keycloak/OIDC — el `spec` vacío no configura autenticación. Una vez desplegado, `oc explain trustify.spec -n trusted-profile-analyzer` muestra los campos disponibles si se quiere ajustar.
+
+Para desactivarlo: `RHTPA_ENABLED="false"` al inicio de `deploy-demo.sh`.
 
 ## Variables principales
 
@@ -95,6 +95,7 @@ Configurables al inicio de `deploy-demo.sh`:
 | `GITHUB_BRANCH` | `main` | Rama usada en las locations explícitas de `org/` y `apis/`. |
 | `RHTAS_ENABLED` | `true` | Instala o no RHTAS. |
 | `RHTAS_NAMESPACE` | `trusted-artifact-signer` | Namespace de la instancia `Securesign`. |
-| `RHTPA_ENABLED` | `false` | Instala o no RHTPA. Requiere completar `RHTPA_PACKAGE`/`RHTPA_CHANNEL` primero. |
+| `RHTPA_ENABLED` | `true` | Instala o no RHTPA. |
+| `RHTPA_NAMESPACE` | `trusted-profile-analyzer` | Namespace compartido del operador y la instancia `Trustify`. |
 
 `CLUSTER_DOMAIN` y los hostnames derivados (`RHDH_HOST`, `KEYCLOAK_HOST`) se descubren en tiempo de ejecución desde el cluster, no están hardcodeados.

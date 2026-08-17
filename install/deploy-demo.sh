@@ -57,19 +57,15 @@ RHTAS_NAMESPACE="trusted-artifact-signer"   # namespace donde vive la instancia 
 RHTAS_CLIENT_ID="trusted-artifact-signer"   # client OIDC en Keycloak, para el login de Fulcio
 
 # ---- Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
-# NO confirmado todavía: docs.redhat.com bloqueó el acceso automatizado y el repo
-# upstream (trustification/trustify-operator) está archivado con un naming que no
-# necesariamente coincide con el operador empaquetado por Red Hat. Es Technology
-# Preview (sin SLA de producción) según la documentación pública.
-# Antes de habilitar esto, correr en el cluster de prueba:
-#   oc get packagemanifests -n openshift-marketplace | grep -iE 'trust|profile'
-# y completar RHTPA_PACKAGE / RHTPA_CHANNEL / RHTPA_CATALOG_SOURCE abajo.
-RHTPA_ENABLED="false"
-RHTPA_OPERATOR_NAMESPACE="openshift-rhtpa-operator"
+# Confirmado contra un packagemanifest real (no hay operador "Red Hat" separado
+# en este catálogo, solo el comunitario). Es Technology Preview (sin SLA de
+# producción). El CRD (Trustify) solo soporta installMode "OwnNamespace", así
+# que operador e instancia comparten un único namespace.
+RHTPA_ENABLED="true"
 RHTPA_NAMESPACE="trusted-profile-analyzer"
-RHTPA_PACKAGE=""
-RHTPA_CHANNEL=""
-RHTPA_CATALOG_SOURCE="redhat-operators"
+RHTPA_PACKAGE="trustify-operator"
+RHTPA_CHANNEL="alpha"
+RHTPA_CATALOG_SOURCE="community-operators"
 
 PULL_SECRET_FILE="$(dirname "$0")/pull-secret.txt"
 GITHUB_TOKEN_FILE="$(dirname "$0")/github-token.txt"
@@ -549,29 +545,27 @@ fi
 
 # ---- 11. Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
 if [ "$RHTPA_ENABLED" = "true" ]; then
-  if [ -z "$RHTPA_PACKAGE" ] || [ -z "$RHTPA_CHANNEL" ]; then
-    echo "Error: RHTPA_ENABLED=true pero RHTPA_PACKAGE/RHTPA_CHANNEL no están completos."
-    echo "       Corré 'oc get packagemanifests -n openshift-marketplace | grep -iE \"trust|profile\"' en el cluster y completá esas variables."
-    exit 1
-  fi
-  echo "==> Instalando el operador RHTPA (${RHTPA_PACKAGE}) en ${RHTPA_OPERATOR_NAMESPACE}"
-  oc get namespace "$RHTPA_OPERATOR_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTPA_OPERATOR_NAMESPACE" >/dev/null
+  echo "==> Instalando el operador RHTPA (${RHTPA_PACKAGE}) en ${RHTPA_NAMESPACE}"
+  oc get namespace "$RHTPA_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTPA_NAMESPACE" >/dev/null
 
+  # El CRD Trustify solo soporta installMode "OwnNamespace": el OperatorGroup
+  # tiene que apuntar al mismo namespace donde corre el operador (no a un ns
+  # separado como hicimos con RHTAS).
   cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: rhtpa-operator-group
-  namespace: ${RHTPA_OPERATOR_NAMESPACE}
+  namespace: ${RHTPA_NAMESPACE}
 spec:
   targetNamespaces:
-    - ${RHTPA_OPERATOR_NAMESPACE}
+    - ${RHTPA_NAMESPACE}
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
   name: ${RHTPA_PACKAGE}
-  namespace: ${RHTPA_OPERATOR_NAMESPACE}
+  namespace: ${RHTPA_NAMESPACE}
 spec:
   channel: ${RHTPA_CHANNEL}
   name: ${RHTPA_PACKAGE}
@@ -579,11 +573,39 @@ spec:
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
 EOF
-  echo "AVISO: instancia de RHTPA (Custom Resource) todavía no scripteada — la forma/CR exacta"
-  echo "       no está confirmada. Revisa la consola de OperatorHub para crear la instancia a mano"
-  echo "       la primera vez, y avisame el CR resultante para automatizarlo acá."
+
+  echo "==> Esperando a que el CSV de ${RHTPA_PACKAGE} quede en 'Succeeded' (hasta 5 min)..."
+  RHTPA_CSV_READY=""
+  for i in $(seq 1 30); do
+    CSV_NAME=$(oc get subscription "$RHTPA_PACKAGE" -n "$RHTPA_NAMESPACE" -o jsonpath='{.status.installedCSV}' 2>/dev/null)
+    CSV_PHASE=$([ -n "$CSV_NAME" ] && oc get csv "$CSV_NAME" -n "$RHTPA_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [ "$CSV_PHASE" = "Succeeded" ]; then
+      RHTPA_CSV_READY="true"
+      break
+    fi
+    sleep 10
+  done
+  if [ -z "$RHTPA_CSV_READY" ]; then
+    echo "AVISO: el CSV de ${RHTPA_PACKAGE} no llegó a 'Succeeded' en 5 min (fase actual: '${CSV_PHASE:-desconocida}')."
+    echo "       Revisa 'oc get csv -n ${RHTPA_NAMESPACE}' y 'oc get installplan -n ${RHTPA_NAMESPACE}'."
+    echo "       Sigo con el resto del script; la instancia de Trustify puede quedar pendiente hasta que el operador esté listo."
+  fi
+
+  echo "==> Creando instancia Trustify en ${RHTPA_NAMESPACE}"
+  # spec vacío == el alm-examples oficial del operador (instala Server + UI con
+  # sus defaults). No se investigó integración con Keycloak/OIDC todavía; una
+  # vez arriba, 'oc explain trustify.spec -n '"$RHTPA_NAMESPACE" muestra los
+  # campos disponibles si se quiere ajustar.
+  cat <<EOF | oc apply -f -
+apiVersion: org.trustify/v1alpha1
+kind: Trustify
+metadata:
+  name: trustify-sample
+  namespace: ${RHTPA_NAMESPACE}
+spec: {}
+EOF
 else
-  echo "==> RHTPA_ENABLED=false, se omite la instalación de Red Hat Trusted Profile Analyzer (falta confirmar el operator package)"
+  echo "==> RHTPA_ENABLED=false, se omite la instalación de Red Hat Trusted Profile Analyzer"
 fi
 
 # ---- Resumen --------------------------------------------------------------------
@@ -608,6 +630,6 @@ RHDH desplegado correctamente.
   del .mcp.json antes de salir a demo (ver demo-workspace/README.md).
 
   RHTAS:  $( [ "$RHTAS_ENABLED" = "true" ] && echo "instalado en ${RHTAS_NAMESPACE} (ver 'oc get routes -n ${RHTAS_NAMESPACE}' para las URLs de Fulcio/Rekor/TUF/TSA)" || echo "omitido (RHTAS_ENABLED=false)" )
-  RHTPA:  $( [ "$RHTPA_ENABLED" = "true" ] && echo "operador instalado en ${RHTPA_OPERATOR_NAMESPACE}, falta crear la instancia (ver aviso arriba)" || echo "omitido (RHTPA_ENABLED=false, falta confirmar el operator package)" )
+  RHTPA:  $( [ "$RHTPA_ENABLED" = "true" ] && echo "instalado en ${RHTPA_NAMESPACE} (ver 'oc get routes -n ${RHTPA_NAMESPACE}' para la URL de la UI)" || echo "omitido (RHTPA_ENABLED=false)" )
 ==========================================================================
 SUMMARY
