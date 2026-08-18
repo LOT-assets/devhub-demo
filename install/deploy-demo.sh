@@ -237,8 +237,19 @@ echo "==> Generando token de API de ArgoCD"
 ARGOCD_ADMIN_PASS=$(oc get secret openshift-gitops-cluster \
   -n "$ARGOCD_NAMESPACE" -o jsonpath='{.data.admin\.password}' | base64 -d)
 
-oc patch configmap argocd-cm -n "$ARGOCD_NAMESPACE" --type merge \
-  -p '{"data":{"accounts.admin":"apiKey, login"}}' 2>/dev/null || true
+# El operador de OpenShift GitOps reconcilia argocd-cm de forma declarativa
+# contra el CR ArgoCD: un 'oc patch configmap argocd-cm' directo se revierte
+# casi al instante. La forma persistente es spec.extraConfig en el CR.
+oc patch argocd openshift-gitops -n "$ARGOCD_NAMESPACE" --type merge \
+  -p '{"spec":{"extraConfig":{"accounts.admin":"apiKey, login"}}}'
+
+echo "==> Esperando a que el operador reconcilie accounts.admin en argocd-cm..."
+for i in $(seq 1 12); do
+  if [ "$(oc get configmap argocd-cm -n "$ARGOCD_NAMESPACE" -o jsonpath='{.data.accounts\.admin}' 2>/dev/null)" = "apiKey, login" ]; then
+    break
+  fi
+  sleep 5
+done
 
 # 'deployment available' no garantiza que el servidor de ArgoCD ya terminó de
 # inicializar sus rutas HTTP (se vio un 415 transitorio justo después de que
@@ -264,7 +275,8 @@ fi
 ARGOCD_AUTH_TOKEN=""
 for i in $(seq 1 6); do
   ARGOCD_AUTH_TOKEN=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/account/admin/token" \
-    -H "Authorization: Bearer ${ARGOCD_SESSION}" 2>/dev/null \
+    -H "Authorization: Bearer ${ARGOCD_SESSION}" \
+    -H "Content-Type: application/json" 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
   if [ -n "$ARGOCD_AUTH_TOKEN" ]; then
     break
