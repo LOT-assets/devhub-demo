@@ -241,6 +241,7 @@ oc patch configmap argocd-cm -n "$ARGOCD_NAMESPACE" --type merge \
   -p '{"data":{"accounts.admin":"apiKey, login"}}' 2>/dev/null || true
 
 ARGOCD_SESSION=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/session" \
+  -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"'"${ARGOCD_ADMIN_PASS}"'"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
