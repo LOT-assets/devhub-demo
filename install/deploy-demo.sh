@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Despliega Red Hat Developer Hub (RHDH) con el plugin dinámico de MCP habilitado,
-# el catálogo de FinBridge (../initial-catalog) descubierto vía GitHub, y login
-# real vía Keycloak OIDC.
+# el catálogo de FinBridge (../initial-catalog) descubierto vía GitHub, login
+# real vía Keycloak OIDC, y los operadores OpenShift GitOps y OpenShift Pipelines.
 #
 # Prerequisitos:
 #   - Sesión activa de `oc login` contra el cluster destino (namespace vacío).
@@ -83,7 +83,58 @@ if [ ! -f "$GITHUB_TOKEN_FILE" ] || [ "$(tr -d '[:space:]' < "$GITHUB_TOKEN_FILE
     exit 1
 fi
 
-# ---- 1. Instalar helm (si no está disponible) --------------------------------
+# ---- 1. Operadores de cluster: OpenShift GitOps + OpenShift Pipelines ---------
+install_operator() {
+  local NAME="$1" PACKAGE="$2" CHANNEL="$3" NS="$4"
+  if oc get subscription "$NAME" -n "$NS" &>/dev/null; then
+    echo "==> Operador ${NAME} ya existe en ${NS}, se omite"
+    return 0
+  fi
+  echo "==> Instalando operador ${NAME} (canal ${CHANNEL}) en ${NS}"
+  cat <<EOFSUB | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ${NAME}
+  namespace: ${NS}
+spec:
+  channel: ${CHANNEL}
+  installPlanApproval: Automatic
+  name: ${PACKAGE}
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOFSUB
+}
+
+wait_for_operator() {
+  local NAME="$1" NS="$2" TIMEOUT="${3:-300}"
+  echo "==> Esperando CSV del operador ${NAME} en ${NS} (timeout ${TIMEOUT}s)..."
+  local ELAPSED=0
+  while [ $ELAPSED -lt $TIMEOUT ]; do
+    local CSV
+    CSV=$(oc get subscription "$NAME" -n "$NS" -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)
+    if [ -n "$CSV" ]; then
+      local PHASE
+      PHASE=$(oc get csv "$CSV" -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+      if [ "$PHASE" = "Succeeded" ]; then
+        echo "    ${CSV} → Succeeded"
+        return 0
+      fi
+    fi
+    sleep 10
+    ELAPSED=$((ELAPSED + 10))
+  done
+  echo "Error: timeout esperando operador ${NAME}" >&2
+  exit 1
+}
+
+install_operator "openshift-gitops-operator" "openshift-gitops-operator" "latest" "openshift-operators"
+install_operator "openshift-pipelines-operator" "openshift-pipelines-operator-rh" "latest" "openshift-operators"
+
+wait_for_operator "openshift-gitops-operator" "openshift-operators"
+wait_for_operator "openshift-pipelines-operator" "openshift-operators"
+
+# ---- 2. Instalar helm (si no está disponible) ---------------------------------
 if [ ! -x "$HELM_BIN" ]; then
   echo "==> Instalando helm en ${HELM_BIN}"
   mkdir -p "$(dirname "$HELM_BIN")"
@@ -97,7 +148,7 @@ if [ ! -x "$HELM_BIN" ]; then
 fi
 "$HELM_BIN" version
 
-# ---- 2. Namespace + pull secret ---------------------------------------------
+# ---- 3. Namespace + pull secret -----------------------------------------------
 echo "==> Creando namespace ${NAMESPACE}"
 oc get namespace "$NAMESPACE" >/dev/null 2>&1 || oc new-project "$NAMESPACE"
 
@@ -108,21 +159,25 @@ oc create secret generic rhdh-pull-secret \
   -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 oc secrets link default rhdh-pull-secret --for=pull -n "$NAMESPACE"
 
-# ---- 3. Token GitHub para discovery del catálogo -------------------------------
+echo "==> Otorgando cluster-reader al SA default/${NAMESPACE} (kubernetes plugin)"
+oc adm policy add-cluster-role-to-user cluster-reader \
+  "system:serviceaccount:${NAMESPACE}:default" 2>/dev/null || true
+
+# ---- 4. Token GitHub para discovery del catálogo -------------------------------
 echo "==> Creando secret con el token de GitHub para descubrir ${GITHUB_ORG}/${GITHUB_REPO}"
 GITHUB_TOKEN=$(tr -d '[:space:]' < "$GITHUB_TOKEN_FILE")
 oc create secret generic rhdh-github-token \
   --from-literal=token="$GITHUB_TOKEN" \
   -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 
-# ---- 4. Token MCP -------------------------------------------------------------
+# ---- 5. Token MCP -------------------------------------------------------------
 echo "==> Generando token MCP"
 MCP_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 oc create secret generic rhdh-mcp-token \
   --from-literal=token="$MCP_TOKEN" \
   -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 
-# ---- 5. Cliente OIDC en Keycloak ----------------------------------------------
+# ---- 6. Cliente OIDC en Keycloak ----------------------------------------------
 echo "==> Creando cliente OIDC '${KEYCLOAK_CLIENT_ID}' en el realm ${KEYCLOAK_REALM}"
 KC="https://${KEYCLOAK_HOST}"
 KC_ADMIN_USER=$(oc get secret keycloak-initial-admin -n "$KEYCLOAK_NAMESPACE" -o jsonpath='{.data.username}' | base64 -d)
@@ -169,7 +224,39 @@ oc create secret generic rhdh-session-secret \
   --from-literal=secret="$SESSION_SECRET" \
   -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 
-# ---- 6. values.yaml del chart --------------------------------------------------
+# ---- 7. Token ArgoCD para el plugin de GitOps ----------------------------------
+ARGOCD_NAMESPACE="openshift-gitops"
+ARGOCD_HOST="openshift-gitops-server-openshift-gitops.${CLUSTER_DOMAIN}"
+ARGOCD_URL="https://${ARGOCD_HOST}"
+
+echo "==> Esperando a que ArgoCD esté listo..."
+oc wait --for=condition=available deployment/openshift-gitops-server \
+  -n "$ARGOCD_NAMESPACE" --timeout=300s
+
+echo "==> Generando token de API de ArgoCD"
+ARGOCD_ADMIN_PASS=$(oc get secret openshift-gitops-cluster \
+  -n "$ARGOCD_NAMESPACE" -o jsonpath='{.data.admin\.password}' | base64 -d)
+
+oc patch configmap argocd-cm -n "$ARGOCD_NAMESPACE" --type merge \
+  -p '{"data":{"accounts.admin":"apiKey, login"}}' 2>/dev/null || true
+
+ARGOCD_SESSION=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/session" \
+  -d '{"username":"admin","password":"'"${ARGOCD_ADMIN_PASS}"'"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+ARGOCD_AUTH_TOKEN=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/account/admin/token" \
+  -H "Authorization: Bearer ${ARGOCD_SESSION}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+oc create secret generic rhdh-argocd-token \
+  --from-literal=token="$ARGOCD_AUTH_TOKEN" \
+  -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+
+# ---- 8. values.yaml del chart --------------------------------------------------
+# checksum de todos los secrets inyectados como env vars: si alguno cambia,
+# el pod template cambia y helm upgrade dispara un rollout automático.
+SECRET_HASH=$(echo -n "${GITHUB_TOKEN}${MCP_TOKEN}${KEYCLOAK_CLIENT_SECRET}${SESSION_SECRET}${ARGOCD_AUTH_TOKEN}" | sha256sum | cut -d' ' -f1)
+
 echo "==> Escribiendo ${VALUES_FILE}"
 cat > "$VALUES_FILE" <<EOF
 # Values para instalar Red Hat Developer Hub ${CHART_VERSION} con MCP + catálogo de
@@ -216,9 +303,27 @@ global:
       # integración de GitHub (integrations.github / GITHUB_TOKEN) de abajo.
       - package: ./dynamic-plugins/dist/backstage-plugin-scaffolder-backend-module-github-dynamic
         disabled: false
+      # --- Kubernetes (dependencia de Tekton) ---
+      - package: ./dynamic-plugins/dist/backstage-plugin-kubernetes-backend-dynamic
+        disabled: false
+      - package: ./dynamic-plugins/dist/backstage-plugin-kubernetes
+        disabled: false
+      # --- Tekton (Pipelines) ---
+      - package: ./dynamic-plugins/dist/backstage-community-plugin-tekton
+        disabled: false
+      # --- ArgoCD (GitOps) ---
+      - package: ./dynamic-plugins/dist/roadiehq-backstage-plugin-argo-cd-backend-dynamic
+        disabled: false
+      - package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-argocd-dynamic
+        disabled: false
+      # --- Topology (vista visual de Tekton + ArgoCD) ---
+      - package: ./dynamic-plugins/dist/backstage-community-plugin-topology
+        disabled: false
 
 upstream:
   backstage:
+    podAnnotations:
+      checksum/secrets: "${SECRET_HASH}"
     appConfig:
       auth:
         session:
@@ -263,6 +368,30 @@ upstream:
             # expone search.query (búsqueda de Backstage) como MCP tool. El plugin
             # search ya corre nativo en RHDH, no requiere dynamic plugin adicional.
             - search
+      kubernetes:
+        clusterLocatorMethods:
+          - type: config
+            clusters:
+              - name: local-cluster
+                url: https://kubernetes.default.svc
+                authProvider: serviceAccount
+                skipTLSVerify: true
+        customResources:
+          - group: tekton.dev
+            apiVersion: v1
+            plural: pipelineruns
+          - group: tekton.dev
+            apiVersion: v1
+            plural: taskruns
+        serviceLocatorMethod:
+          type: multiTenant
+      argocd:
+        appLocatorMethods:
+          - type: config
+            instances:
+              - name: openshift-gitops
+                url: https://${ARGOCD_HOST}
+                token: \${ARGOCD_AUTH_TOKEN}
       integrations:
         github:
           - host: github.com
@@ -347,6 +476,12 @@ upstream:
           secretKeyRef:
             name: rhdh-github-token
             key: token
+      # token de ArgoCD para el plugin de GitOps
+      - name: ARGOCD_AUTH_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: rhdh-argocd-token
+            key: token
 
     extraVolumeMounts:
       # entradas por defecto del chart (no se deben perder al sobreescribir el array)
@@ -391,7 +526,7 @@ upstream:
         emptyDir: {}
 EOF
 
-# ---- 7. Instalar RHDH ----------------------------------------------------------
+# ---- 9. Instalar RHDH ----------------------------------------------------------
 echo "==> helm install"
 "$HELM_BIN" repo add openshift-helm-charts https://charts.openshift.io >/dev/null
 "$HELM_BIN" repo update >/dev/null
@@ -401,7 +536,7 @@ echo "==> helm install"
 echo "==> Esperando a que el pod quede listo..."
 oc rollout status deployment "${RELEASE}-developer-hub" -n "$NAMESPACE" --timeout=8m
 
-# ---- 8. Integración con Claude Code / VSCodium ---------------------------------
+# ---- 10. Integración con Claude Code / VSCodium --------------------------------
 if command -v claude >/dev/null 2>&1; then
   echo "==> Actualizando el servidor MCP en Claude Code"
   claude mcp remove rhdh-mcp >/dev/null 2>&1 || true
@@ -412,14 +547,16 @@ else
   echo "==> claude CLI no encontrado, se omite el registro del MCP en Claude Code"
 fi
 
-if command -v codium >/dev/null 2>&1; then
-  echo "==> Instalando extensión de Claude Code en VSCodium"
-  codium --install-extension anthropic.claude-code || true
-else
-  echo "==> codium no encontrado, se omite la instalación de la extensión"
-fi
+for EDITOR_CMD in codium code; do
+  if command -v "$EDITOR_CMD" >/dev/null 2>&1; then
+    echo "==> Instalando extensión de Claude Code en ${EDITOR_CMD}"
+    "$EDITOR_CMD" --install-extension anthropic.claude-code || true
+  else
+    echo "==> ${EDITOR_CMD} no encontrado, se omite la instalación de la extensión"
+  fi
+done
 
-# ---- 9. .env de demo-workspace --------------------------------------------------
+# ---- 11. .env de demo-workspace -------------------------------------------------
 echo "==> Escribiendo ${WORKSPACE_ENV_FILE}"
 mkdir -p "$(dirname "$WORKSPACE_ENV_FILE")"
 cat > "$WORKSPACE_ENV_FILE" <<EOF
@@ -641,3 +778,12 @@ RHDH desplegado correctamente.
   RHTPA:  $( [ "$RHTPA_ENABLED" = "true" ] && echo "instalado en ${RHTPA_NAMESPACE} (ver 'oc get routes -n ${RHTPA_NAMESPACE}' para la URL de la UI)" || echo "omitido (RHTPA_ENABLED=false)" )
 ==========================================================================
 SUMMARY
+
+# Estado de los operadores instalados
+GITOPS_CSV=$(oc get subscription openshift-gitops-operator -n openshift-operators -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)
+GITOPS_PHASE=$(oc get csv "$GITOPS_CSV" -n openshift-operators -o jsonpath='{.status.phase}' 2>/dev/null || true)
+echo "  OpenShift GitOps:      ${GITOPS_CSV:-no encontrado} (${GITOPS_PHASE:-desconocido})"
+
+PIPELINES_CSV=$(oc get subscription openshift-pipelines-operator -n openshift-operators -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)
+PIPELINES_PHASE=$(oc get csv "$PIPELINES_CSV" -n openshift-operators -o jsonpath='{.status.phase}' 2>/dev/null || true)
+echo "  OpenShift Pipelines:   ${PIPELINES_CSV:-no encontrado} (${PIPELINES_PHASE:-desconocido})"
