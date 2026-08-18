@@ -45,6 +45,8 @@ global:
 
 upstream:
   backstage:
+    podAnnotations:
+      checksum/secrets: "5cabd7c4dea9b2ac4875b897cf6c2004abbb58d43e4f954e8828601e9de9dbe4"
     appConfig:
       auth:
         session:
