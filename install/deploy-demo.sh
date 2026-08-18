@@ -564,7 +564,7 @@ RHDH_MCP_URL=https://${RHDH_HOST}/api/mcp-actions/v1
 RHDH_MCP_TOKEN=${MCP_TOKEN}
 EOF
 
-# ---- 10. Red Hat Trusted Artifact Signer (RHTAS) --------------------------------
+# ---- 12. Red Hat Trusted Artifact Signer (RHTAS) --------------------------------
 if [ "$RHTAS_ENABLED" = "true" ]; then
   echo "==> Instalando el operador RHTAS (rhtas-operator) en ${RHTAS_OPERATOR_NAMESPACE}"
   oc get namespace "$RHTAS_OPERATOR_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_OPERATOR_NAMESPACE" >/dev/null
@@ -692,7 +692,7 @@ else
   echo "==> RHTAS_ENABLED=false, se omite la instalación de Red Hat Trusted Artifact Signer"
 fi
 
-# ---- 11. Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
+# ---- 13. Red Hat Trusted Profile Analyzer (RHTPA) --------------------------------
 if [ "$RHTPA_ENABLED" = "true" ]; then
   echo "==> Instalando el operador RHTPA (${RHTPA_PACKAGE}) en ${RHTPA_NAMESPACE}"
   oc get namespace "$RHTPA_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTPA_NAMESPACE" >/dev/null
