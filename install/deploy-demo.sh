@@ -240,14 +240,42 @@ ARGOCD_ADMIN_PASS=$(oc get secret openshift-gitops-cluster \
 oc patch configmap argocd-cm -n "$ARGOCD_NAMESPACE" --type merge \
   -p '{"data":{"accounts.admin":"apiKey, login"}}' 2>/dev/null || true
 
-ARGOCD_SESSION=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/session" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"'"${ARGOCD_ADMIN_PASS}"'"}' \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+# 'deployment available' no garantiza que el servidor de ArgoCD ya terminó de
+# inicializar sus rutas HTTP (se vio un 415 transitorio justo después de que
+# el deployment queda 'available'); reintentamos con backoff en vez de asumir
+# que el primer intento va a funcionar.
+ARGOCD_SESSION=""
+for i in $(seq 1 6); do
+  ARGOCD_SESSION=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/session" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"admin","password":"'"${ARGOCD_ADMIN_PASS}"'"}' 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+  if [ -n "$ARGOCD_SESSION" ]; then
+    break
+  fi
+  echo "    ArgoCD API todavía no responde, reintentando en 5s (intento $i/6)..."
+  sleep 5
+done
+if [ -z "$ARGOCD_SESSION" ]; then
+  echo "Error: no se pudo obtener un session token de ArgoCD tras 6 intentos." >&2
+  exit 1
+fi
 
-ARGOCD_AUTH_TOKEN=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/account/admin/token" \
-  -H "Authorization: Bearer ${ARGOCD_SESSION}" \
-  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+ARGOCD_AUTH_TOKEN=""
+for i in $(seq 1 6); do
+  ARGOCD_AUTH_TOKEN=$(curl -kfsS -X POST "${ARGOCD_URL}/api/v1/account/admin/token" \
+    -H "Authorization: Bearer ${ARGOCD_SESSION}" 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+  if [ -n "$ARGOCD_AUTH_TOKEN" ]; then
+    break
+  fi
+  echo "    ArgoCD API todavía no responde, reintentando en 5s (intento $i/6)..."
+  sleep 5
+done
+if [ -z "$ARGOCD_AUTH_TOKEN" ]; then
+  echo "Error: no se pudo generar un API token de ArgoCD tras 6 intentos." >&2
+  exit 1
+fi
 
 oc create secret generic rhdh-argocd-token \
   --from-literal=token="$ARGOCD_AUTH_TOKEN" \
