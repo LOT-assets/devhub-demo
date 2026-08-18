@@ -432,15 +432,15 @@ if [ "$RHTAS_ENABLED" = "true" ]; then
   echo "==> Instalando el operador RHTAS (rhtas-operator) en ${RHTAS_OPERATOR_NAMESPACE}"
   oc get namespace "$RHTAS_OPERATOR_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_OPERATOR_NAMESPACE" >/dev/null
 
+  # rhtas-operator solo soporta installMode AllNamespaces (confirmado contra el
+  # packagemanifest real: OwnNamespace/SingleNamespace/MultiNamespace = false).
+  # Sin targetNamespaces, el OperatorGroup queda en modo AllNamespaces.
   cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: rhtas-operator-group
   namespace: ${RHTAS_OPERATOR_NAMESPACE}
-spec:
-  targetNamespaces:
-    - ${RHTAS_OPERATOR_NAMESPACE}
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -477,10 +477,18 @@ EOF
   fi
 
   echo "==> Creando cliente OIDC '${RHTAS_CLIENT_ID}' en el realm ${KEYCLOAK_REALM} (login de Fulcio)"
-  # Reutiliza $KC / $KC_TOKEN del paso 5. Client público (sin secret): cosign hace
-  # login interactivo abriendo un listener local en http://localhost:<puerto>.
-  # NO VALIDADO end-to-end todavía — revisar si el flujo real de cosign/RHTAS
-  # necesita otro redirectUri una vez probado contra el cluster de prueba.
+  # Client público (sin secret): cosign hace login interactivo abriendo un
+  # listener local en http://localhost:<puerto>. NO VALIDADO end-to-end
+  # todavía — revisar si el flujo real de cosign/RHTAS necesita otro
+  # redirectUri una vez probado contra el cluster de prueba.
+  #
+  # Pedimos un token de Keycloak nuevo en vez de reusar $KC_TOKEN del paso 5:
+  # el access token de admin-cli vive poco (default ~1 min) y el wait del CSV
+  # de arriba puede tardar hasta 5 min, así que para acá ya expiró.
+  KC_TOKEN=$(curl -fsS -X POST "$KC/realms/master/protocol/openid-connect/token" \
+    -d "client_id=admin-cli" -d "username=$KC_ADMIN_USER" -d "password=$KC_ADMIN_PASS" -d "grant_type=password" \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
   EXISTING_RHTAS_CLIENT_ID=$(curl -fsS "$KC/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${RHTAS_CLIENT_ID}" \
     -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')")
   if [ -n "$EXISTING_RHTAS_CLIENT_ID" ]; then
