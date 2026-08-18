@@ -689,11 +689,20 @@ EOF
   oc get namespace "$RHTAS_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_NAMESPACE" >/dev/null
 
   # Aunque el CSV ya esté 'Succeeded', el CRD puede tardar unos segundos más en
-  # quedar visible para la caché de discovery de 'oc' (visto en el cluster de
-  # prueba: "no matches for kind Securesign ... ensure CRDs are installed
-  # first" con el CRD ya creado). Reintentamos el apply en vez de fallar en seco.
+  # quedar visible para la caché de discovery de 'oc'. Reintentamos el apply
+  # en vez de fallar en seco.
+  #
+  # El shape de este CR NO es el del sample en config/samples/ del repo
+  # upstream (ese es de una versión más nueva del operador). Verificado contra
+  # el schema real instalado (v1.4.3, API v1alpha1) con:
+  #   oc explain securesign.spec.fulcio --api-version=rhtas.redhat.com/v1alpha1
+  # (y lo mismo para rekor/tuf/tsa/config.OIDCIssuers). Notar: 'externalAccess'
+  # en vez de 'ingress', 'certificate' en vez de 'signer.certificateChain' en
+  # fulcio, y los campos de OIDCIssuers van en PascalCase (ClientID, Issuer,
+  # IssuerURL, Type) — inconsistente con el resto de la API, pero así está
+  # definido el CRD.
   cat > "$SCRATCH_DIR/securesign.yaml" <<EOF
-apiVersion: rhtas.redhat.com/v1
+apiVersion: rhtas.redhat.com/v1alpha1
 kind: Securesign
 metadata:
   name: securesign-sample
@@ -704,25 +713,24 @@ metadata:
     app.kubernetes.io/part-of: trusted-artifact-signer
 spec:
   fulcio:
-    ingress:
+    externalAccess:
       enabled: true
+    certificate:
+      organizationName: Red Hat
     config:
-      oidcIssuers:
-        - clientID: "${RHTAS_CLIENT_ID}"
-          issuerURL: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
-          issuer: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
-          type: "email"
-    signer:
-      certificateChain:
-        organizationName: Red Hat
+      OIDCIssuers:
+        - ClientID: "${RHTAS_CLIENT_ID}"
+          IssuerURL: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
+          Issuer: "https://${KEYCLOAK_HOST}/realms/${KEYCLOAK_REALM}"
+          Type: "email"
   rekor:
-    ingress:
+    externalAccess:
       enabled: true
   tuf:
-    ingress:
+    externalAccess:
       enabled: true
   tsa:
-    ingress:
+    externalAccess:
       enabled: true
     signer:
       certificateChain:
