@@ -688,7 +688,11 @@ EOF
   echo "==> Creando instancia Securesign en ${RHTAS_NAMESPACE}"
   oc get namespace "$RHTAS_NAMESPACE" >/dev/null 2>&1 || oc new-project "$RHTAS_NAMESPACE" >/dev/null
 
-  cat <<EOF | oc apply -f -
+  # Aunque el CSV ya esté 'Succeeded', el CRD puede tardar unos segundos más en
+  # quedar visible para la caché de discovery de 'oc' (visto en el cluster de
+  # prueba: "no matches for kind Securesign ... ensure CRDs are installed
+  # first" con el CRD ya creado). Reintentamos el apply en vez de fallar en seco.
+  cat > "$SCRATCH_DIR/securesign.yaml" <<EOF
 apiVersion: rhtas.redhat.com/v1
 kind: Securesign
 metadata:
@@ -729,6 +733,21 @@ spec:
         rootCA:
           organizationName: Red Hat
 EOF
+
+  RHTAS_CR_APPLIED=""
+  for i in $(seq 1 6); do
+    if oc apply -f "$SCRATCH_DIR/securesign.yaml" 2>"$SCRATCH_DIR/rhtas-apply-err"; then
+      RHTAS_CR_APPLIED="true"
+      break
+    fi
+    cat "$SCRATCH_DIR/rhtas-apply-err"
+    echo "    CRD Securesign todavía no visible, reintentando en 5s (intento $i/6)..."
+    sleep 5
+  done
+  if [ -z "$RHTAS_CR_APPLIED" ]; then
+    echo "Error: no se pudo crear la instancia Securesign tras 6 intentos." >&2
+    exit 1
+  fi
 else
   echo "==> RHTAS_ENABLED=false, se omite la instalación de Red Hat Trusted Artifact Signer"
 fi
@@ -790,7 +809,10 @@ EOF
   # sus defaults). No se investigó integración con Keycloak/OIDC todavía; una
   # vez arriba, 'oc explain trustify.spec -n '"$RHTPA_NAMESPACE" muestra los
   # campos disponibles si se quiere ajustar.
-  cat <<EOF | oc apply -f -
+  #
+  # Mismo problema de caché de discovery que con Securesign: el CRD puede no
+  # estar visible para 'oc' todavía aunque el CSV ya diga 'Succeeded'.
+  cat > "$SCRATCH_DIR/trustify.yaml" <<EOF
 apiVersion: org.trustify/v1alpha1
 kind: Trustify
 metadata:
@@ -798,6 +820,21 @@ metadata:
   namespace: ${RHTPA_NAMESPACE}
 spec: {}
 EOF
+
+  RHTPA_CR_APPLIED=""
+  for i in $(seq 1 6); do
+    if oc apply -f "$SCRATCH_DIR/trustify.yaml" 2>"$SCRATCH_DIR/rhtpa-apply-err"; then
+      RHTPA_CR_APPLIED="true"
+      break
+    fi
+    cat "$SCRATCH_DIR/rhtpa-apply-err"
+    echo "    CRD Trustify todavía no visible, reintentando en 5s (intento $i/6)..."
+    sleep 5
+  done
+  if [ -z "$RHTPA_CR_APPLIED" ]; then
+    echo "Error: no se pudo crear la instancia Trustify tras 6 intentos." >&2
+    exit 1
+  fi
 else
   echo "==> RHTPA_ENABLED=false, se omite la instalación de Red Hat Trusted Profile Analyzer"
 fi
