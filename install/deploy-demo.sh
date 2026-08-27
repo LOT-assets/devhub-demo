@@ -67,9 +67,14 @@ RHTPA_PACKAGE="trustify-operator"
 RHTPA_CHANNEL="alpha"
 RHTPA_CATALOG_SOURCE="community-operators"
 
+PIPELINE_NAMESPACE="demo-cicd"              # namespace donde se instalan los Tasks (dependencias del pipeline)
+DEPLOYMENTS_NAMESPACE="deployments-demo"    # namespace donde se despliegan las aplicaciones
+
 PULL_SECRET_FILE="$(dirname "$0")/pull-secret.txt"
 GITHUB_TOKEN_FILE="$(dirname "$0")/github-token.txt"
+GITOPS_TOKEN_FILE="$(dirname "$0")/gitops-token.txt"
 VALUES_FILE="$(dirname "$0")/rhdh-values.yaml"
+TASK_UPDATE_GITOPS_FILE="$(dirname "$0")/task-update-gitops.yaml"
 WORKSPACE_ENV_FILE="$(dirname "$0")/../demo-workspace/.env"
 
 HELM_BIN="${HOME}/bin/helm"
@@ -133,6 +138,64 @@ install_operator "openshift-pipelines-operator" "openshift-pipelines-operator-rh
 
 wait_for_operator "openshift-gitops-operator" "openshift-operators"
 wait_for_operator "openshift-pipelines-operator" "openshift-operators"
+
+# ---- 1b. Dependencias del Pipeline CI/CD (Tekton Tasks) --------------------------
+echo "==> Esperando a que el controlador de Tekton Pipelines esté listo..."
+oc wait --for=condition=Ready tektonconfig/config --timeout=300s 2>/dev/null || {
+  echo "    TektonConfig 'config' no encontrado o no listo, esperando 60s adicionales..."
+  sleep 60
+}
+
+echo "==> Habilitando pipelines-console-plugin en la consola de OpenShift"
+CURRENT_PLUGINS=$(oc get console.operator.openshift.io cluster -o jsonpath='{.spec.plugins}' 2>/dev/null || true)
+if echo "$CURRENT_PLUGINS" | grep -q "pipelines-console-plugin"; then
+  echo "    pipelines-console-plugin ya está habilitado"
+else
+  oc patch console.operator.openshift.io cluster --type json \
+    -p '[{"op":"add","path":"/spec/plugins/-","value":"pipelines-console-plugin"}]' 2>/dev/null \
+  || oc patch console.operator.openshift.io cluster --type merge \
+    -p '{"spec":{"plugins":["pipelines-console-plugin"]}}'
+  echo "    pipelines-console-plugin habilitado"
+fi
+
+echo "==> Creando namespace ${PIPELINE_NAMESPACE} para las dependencias del pipeline"
+oc get namespace "$PIPELINE_NAMESPACE" >/dev/null 2>&1 || oc new-project "$PIPELINE_NAMESPACE" >/dev/null
+
+echo "==> Instalando Task 'gitleaks' en ${PIPELINE_NAMESPACE}"
+curl -fsSL https://raw.githubusercontent.com/tektoncd/catalog/main/task/gitleaks/0.1/gitleaks.yaml \
+  | oc apply -n "$PIPELINE_NAMESPACE" -f -
+
+echo "==> Instalando Task 'buildpacks' en ${PIPELINE_NAMESPACE}"
+curl -fsSL https://raw.githubusercontent.com/tektoncd/catalog/main/task/buildpacks/0.6/buildpacks.yaml \
+  | oc apply -n "$PIPELINE_NAMESPACE" -f -
+
+echo "==> Buildah se usa via cluster resolver (openshift-pipelines), no requiere instalación local"
+
+echo "==> Aplicando Task 'update-gitops-repo' en ${PIPELINE_NAMESPACE}"
+oc apply -n "$PIPELINE_NAMESPACE" -f "$TASK_UPDATE_GITOPS_FILE"
+
+echo "==> Tasks instalados en ${PIPELINE_NAMESPACE}:"
+oc get tasks -n "$PIPELINE_NAMESPACE"
+
+echo "==> Creando namespace ${DEPLOYMENTS_NAMESPACE} para despliegues"
+oc get namespace "$DEPLOYMENTS_NAMESPACE" >/dev/null 2>&1 || oc new-project "$DEPLOYMENTS_NAMESPACE" >/dev/null
+
+echo "==> Otorgando image-puller a ${DEPLOYMENTS_NAMESPACE} sobre ${PIPELINE_NAMESPACE}"
+oc policy add-role-to-group system:image-puller \
+  "system:serviceaccounts:${DEPLOYMENTS_NAMESPACE}" -n "$PIPELINE_NAMESPACE"
+
+echo "==> Creando secret 'git-credentials' en ${PIPELINE_NAMESPACE} para push al repo de GitOps"
+if [ -f "$GITOPS_TOKEN_FILE" ]; then
+  GITOPS_TOKEN=$(tr -d '[:space:]' < "$GITOPS_TOKEN_FILE")
+  oc create secret generic git-credentials \
+    --from-literal=username="x-access-token" \
+    --from-literal=token="$GITOPS_TOKEN" \
+    -n "$PIPELINE_NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+else
+  echo "    AVISO: ${GITOPS_TOKEN_FILE} no existe, se omite la creación del secret git-credentials."
+  echo "    Créalo manualmente antes de ejecutar el pipeline:"
+  echo "    oc create secret generic git-credentials --from-literal=username=<user> --from-literal=token=<pat> -n ${PIPELINE_NAMESPACE}"
+fi
 
 # ---- 2. Instalar helm (si no está disponible) ---------------------------------
 if [ ! -x "$HELM_BIN" ]; then
@@ -868,6 +931,9 @@ RHDH desplegado correctamente.
   Abre ../demo-workspace en Codium/VS Code y acepta el diálogo de confianza
   del .mcp.json antes de salir a demo (ver demo-workspace/README.md).
 
+  Tekton Tasks: instalados en ${PIPELINE_NAMESPACE} (gitleaks, buildpacks, buildah, update-gitops-repo)
+            Falta crear el Secret 'git-credentials' con keys 'username' y 'token' para el task update-gitops.
+
   RHTAS:  $( [ "$RHTAS_ENABLED" = "true" ] && echo "instalado en ${RHTAS_NAMESPACE} (ver 'oc get routes -n ${RHTAS_NAMESPACE}' para las URLs de Fulcio/Rekor/TUF/TSA)" || echo "omitido (RHTAS_ENABLED=false)" )
   RHTPA:  $( [ "$RHTPA_ENABLED" = "true" ] && echo "instalado en ${RHTPA_NAMESPACE} (ver 'oc get routes -n ${RHTPA_NAMESPACE}' para la URL de la UI)" || echo "omitido (RHTPA_ENABLED=false)" )
 ==========================================================================
@@ -881,3 +947,7 @@ echo "  OpenShift GitOps:      ${GITOPS_CSV:-no encontrado} (${GITOPS_PHASE:-des
 PIPELINES_CSV=$(oc get subscription openshift-pipelines-operator -n openshift-operators -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)
 PIPELINES_PHASE=$(oc get csv "$PIPELINES_CSV" -n openshift-operators -o jsonpath='{.status.phase}' 2>/dev/null || true)
 echo "  OpenShift Pipelines:   ${PIPELINES_CSV:-no encontrado} (${PIPELINES_PHASE:-desconocido})"
+
+echo ""
+echo "  Tekton Tasks (${PIPELINE_NAMESPACE}):"
+oc get tasks -n "$PIPELINE_NAMESPACE" 2>/dev/null || echo "    (no se encontraron recursos)"

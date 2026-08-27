@@ -1,0 +1,189 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: new-pipeline
+spec:
+  params:
+    - description: URL del repositorio del codigo fuente
+      name: repo-url
+      type: string
+    - description: ruta del registry donde se va a guardar el contenedor
+      name: image-destination
+      type: string
+    - description: rama principal
+      name: git-ref
+      type: string
+    - description: subdirectorio donde está el código fuente
+      name: source-subdirectory
+      type: string
+      default: "."
+    - name: build-method
+      description: método de build (buildpacks o buildah)
+      type: string
+      default: buildpacks
+    - name: dockerfile-path
+      description: ruta al Dockerfile (solo para buildah)
+      type: string
+      default: ./Dockerfile
+    - name: gitops-repo-url
+      description: URL del repo de GitOps
+      type: string
+    - name: manifest-file
+      description: ruta al archivo de deployment en el repo GitOps
+      type: string
+      default: terms-web/deployment.yaml
+  workspaces:
+    - name: shared-workspace
+      optional: false
+  tasks:
+    - name: git-clone
+      params:
+        - name: CRT_FILENAME
+          value: ca-bundle.crt
+        - name: HTTP_PROXY
+          value: ""
+        - name: HTTPS_PROXY
+          value: ""
+        - name: NO_PROXY
+          value: ""
+        - name: SUBDIRECTORY
+          value: ""
+        - name: USER_HOME
+          value: /home/git
+        - name: DELETE_EXISTING
+          value: "true"
+        - name: VERBOSE
+          value: "false"
+        - name: SSL_VERIFY
+          value: "true"
+        - name: URL
+          value: $(params.repo-url)
+        - name: REVISION
+          value: $(params.git-ref)
+        - name: REFSPEC
+          value: ""
+        - name: SUBMODULES
+          value: "true"
+        - name: DEPTH
+          value: "1"
+        - name: SPARSE_CHECKOUT_DIRECTORIES
+          value: ""
+      taskRef:
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: git-clone
+          - name: namespace
+            value: openshift-pipelines
+        resolver: cluster
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+    - name: gitleaks
+      params:
+        - name: repo_path
+          value: $(workspaces.source.path)
+        - name: config_file_url
+          value: ""
+        - name: config_file_path
+          value: ""
+        - name: output_format
+          value: json
+        - name: report_output_path
+          value: $(workspaces.source.path)/gitleaks-report.json
+        - name: args
+          value: []
+      runAfter:
+        - git-clone
+      taskRef:
+        kind: Task
+        name: gitleaks
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: buildpacks
+      when:
+        - input: $(params.build-method)
+          operator: in
+          values:
+            - buildpacks
+      params:
+        - name: APP_IMAGE
+          value: $(params.image-destination)
+        - name: BUILDER_IMAGE
+          value: docker.io/paketobuildpacks/builder:base
+        - name: CNB_PLATFORM_API
+          value: "0.11"
+        - name: SUBDIRECTORY
+          value: $(params.source-subdirectory)
+        - name: ENV_VARS
+          value: []
+        - name: PROCESS_TYPE
+          value: web
+        - name: BINDINGS_GLOB
+          value: "*.pem"
+        - name: RUN_IMAGE
+          value: ""
+        - name: CACHE_IMAGE
+          value: ""
+        - name: SKIP_RESTORE
+          value: "false"
+        - name: USER_ID
+          value: "1000"
+        - name: GROUP_ID
+          value: "1000"
+        - name: VERBOSE
+          value: "false"
+      runAfter:
+        - gitleaks
+      taskRef:
+        kind: Task
+        name: buildpacks
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: buildah
+      when:
+        - input: $(params.build-method)
+          operator: in
+          values:
+            - buildah
+      params:
+        - name: IMAGE
+          value: $(params.image-destination)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: .
+        - name: TLSVERIFY
+          value: "false"
+      runAfter:
+        - gitleaks
+      taskRef:
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: buildah
+          - name: namespace
+            value: openshift-pipelines
+        resolver: cluster
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: update-gitops
+      params:
+        - name: gitops-repo-url
+          value: $(params.gitops-repo-url)
+        - name: image-path
+          value: $(params.image-destination)
+        - name: manifest-file
+          value: $(params.manifest-file)
+      runAfter:
+        - buildpacks
+        - buildah
+      taskRef:
+        kind: Task
+        name: update-gitops-repo
+  finally: []

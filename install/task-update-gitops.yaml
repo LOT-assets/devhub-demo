@@ -1,0 +1,52 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: update-gitops-repo
+spec:
+  params:
+    - name: gitops-repo-url
+      type: string
+    - name: gitops-branch
+      type: string
+      default: main
+    - name: image-path
+      type: string
+    - name: manifest-file
+      type: string
+      default: terms-web/deployment.yaml
+  steps:
+    - name: update-and-push
+      image: bitnami/git:latest
+      env:
+        - name: GIT_USER
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: username
+        - name: GIT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: token
+        - name: GITOPS_URL
+          value: $(params.gitops-repo-url)
+        - name: GITOPS_BRANCH
+          value: $(params.gitops-branch)
+        - name: IMAGE_PATH
+          value: $(params.image-path)
+        - name: MANIFEST_FILE
+          value: $(params.manifest-file)
+      script: |
+        #!/bin/bash
+        set -ex
+        REPO_HOST=$(echo "${GITOPS_URL}" | sed 's|https://||')
+        echo "Cloning repo: ${REPO_HOST}"
+        git clone "https://${GIT_USER}:${GIT_TOKEN}@${REPO_HOST}" /tmp/gitops
+        cd /tmp/gitops
+        ls -la
+        git config user.email "pipeline@openshift.local"
+        git config user.name "Tekton Pipeline"
+        sed -i "s|image: .*|image: ${IMAGE_PATH}|" "${MANIFEST_FILE}"
+        git add .
+        git commit -m "Update image to ${IMAGE_PATH}"
+        git push origin "${GITOPS_BRANCH}"
